@@ -4,7 +4,6 @@ import { equal } from '@wry/equality';
 
 import { NetworkStatus, isNetworkRequestInFlight } from './networkStatus';
 import {
-  Concast,
   compact,
   cloneDeep,
   getOperationDefinition,
@@ -28,6 +27,7 @@ import {
 import { QueryInfo } from './QueryInfo';
 import { MissingFieldError } from '../cache';
 import { MissingTree } from '../cache/core/types/common';
+import { lastValueFrom, Subscription } from "rxjs";
 
 const {
   assign,
@@ -66,6 +66,7 @@ export class ObservableQuery<
   public readonly options: WatchQueryOptions<TVariables, TData>;
   public readonly queryId: string;
   public readonly queryName?: string;
+  private sub: Subscription|null=null;
 
   // Computed shorthand for this.options.variables, preserved for
   // backwards compatibility.
@@ -88,7 +89,7 @@ export class ObservableQuery<
 
   // When this.concast is defined, this.observer is the Observer currently
   // subscribed to that Concast.
-  private concast?: Concast<ApolloQueryResult<TData>>;
+  private concast?: Observable<ApolloQueryResult<TData>>;
   private observer?: Observer<ApolloQueryResult<TData>>;
 
   private pollingInfo?: {
@@ -586,7 +587,7 @@ once, rather than every time you call fetchMore.`);
   private fetch(
     options: WatchQueryOptions<TVariables, TData>,
     newNetworkStatus?: NetworkStatus,
-  ): Concast<ApolloQueryResult<TData>> {
+  ): Observable<ApolloQueryResult<TData>> {
     this.queryManager.setObservableQuery(this);
     return this.queryManager.fetchQueryObservable(
       this.queryId,
@@ -734,16 +735,15 @@ once, rather than every time you call fetchMore.`);
       // because we just want to ignore the old observable, not prematurely shut
       // it down, since other consumers may be awaiting this.concast.promise.
       if (this.concast && this.observer) {
-        this.concast.removeObserver(this.observer, true);
+        this.sub?.unsubscribe();
       }
 
       this.concast = concast;
       this.observer = observer;
     }
 
-    concast.addObserver(observer);
-
-    return concast.promise;
+    this.sub = concast.subscribe(observer);
+    return lastValueFrom(concast);
   }
 
   // Pass the current result to this.observer.next without applying any
@@ -799,7 +799,7 @@ once, rather than every time you call fetchMore.`);
   private tearDownQuery() {
     if (this.isTornDown) return;
     if (this.concast && this.observer) {
-      this.concast.removeObserver(this.observer);
+      this.sub?.unsubscribe();
       delete this.concast;
       delete this.observer;
     }

@@ -4,7 +4,7 @@ import { DocumentNode } from 'graphql';
 // TODO(brian): A hack until this issue is resolved (https://github.com/graphql/graphql-js/issues/3356)
 type OperationTypeNode = any;
 import { equal } from '@wry/equality';
-import { of, map } from 'rxjs';
+import { of, map, firstValueFrom, Subject, merge, switchMap, from } from 'rxjs';
 
 import { ApolloLink, execute, FetchResult } from '../link/core';
 import { Cache, ApolloCache, canonicalStringify } from '../cache';
@@ -21,7 +21,8 @@ import {
   Observable,
   asyncMap,
   isNonEmptyArray,
-  Concast,
+  concast,
+  cleanup,
   ConcastSourcesIterable,
   makeUniqueId,
   isDocumentNode,
@@ -100,7 +101,7 @@ export class QueryManager<TStore> {
 
   // Maps from queryId strings to Promise rejection functions for
   // currently active queries and fetches.
-  private fetchCancelFns = new Map<string, (error: any) => any>();
+  private fetchCancelFns = new Map<string, Subject<Error>>();
 
   constructor({
     cache,
@@ -148,7 +149,7 @@ export class QueryManager<TStore> {
   }
 
   private cancelPendingFetches(error: Error) {
-    this.fetchCancelFns.forEach(cancel => cancel(error));
+    this.fetchCancelFns.forEach(cancel => cancel.next(error));
     this.fetchCancelFns.clear();
   }
 
@@ -514,11 +515,11 @@ export class QueryManager<TStore> {
     options: WatchQueryOptions<TVars, TData>,
     networkStatus?: NetworkStatus,
   ): Promise<ApolloQueryResult<TData>> {
-    return this.fetchQueryObservable<TData, TVars>(
+    return firstValueFrom(this.fetchQueryObservable<TData, TVars>(
       queryId,
       options,
       networkStatus,
-    ).promise;
+    ));
   }
 
   public getQueryStore() {
@@ -546,7 +547,7 @@ export class QueryManager<TStore> {
     canUseWeakMap ? WeakMap : Map
   )<DocumentNode, TransformCacheEntry>();
 
-  public transform(document: DocumentNode) {
+  public transform(document: DocumentNode) : TransformCacheEntry  {
     const { transformCache } = this;
 
     if (!transformCache.has(document)) {
@@ -977,27 +978,25 @@ export class QueryManager<TStore> {
         observable = byVariables.get(varJson);
 
         if (!observable) {
-          const concast = new Concast<FetchResult<T>>([
+          const obs = concast([
             execute(link, operation) as Observable<FetchResult<T>>
-          ]);
-
-          byVariables.set(varJson, observable = concast);
-
-          concast.cleanup(() => {
+          ]).pipe(cleanup(() => {
             if (byVariables.delete(varJson) &&
-                byVariables.size < 1) {
+              byVariables.size < 1) {
               inFlightLinkObservables.delete(serverQuery);
             }
-          });
+          }));
+
+          byVariables.set(varJson, observable = obs);
         }
 
       } else {
-        observable = new Concast([
+        observable = concast([
           execute(link, operation) as Observable<FetchResult<T>>
         ]);
       }
     } else {
-      observable = new Concast([
+      observable = concast([
         of({ data: {} } as FetchResult<T>)
       ]);
       context = this.prepareContext(context);
@@ -1087,7 +1086,7 @@ export class QueryManager<TStore> {
     // NetworkStatus.loading, but also possibly fetchMore, poll, refetch,
     // or setVariables.
     networkStatus = NetworkStatus.loading,
-  ): Concast<ApolloQueryResult<TData>> {
+  ): Observable<ApolloQueryResult<TData>> {
     const query = this.transform(options.query).document;
     const variables = this.getVariables(query, options.variables) as TVars;
     const queryInfo = this.getQuery(queryId);
@@ -1124,15 +1123,17 @@ export class QueryManager<TStore> {
 
     // This cancel function needs to be set before the concast is created,
     // in case concast creation synchronously cancels the request.
-    this.fetchCancelFns.set(queryId, reason => {
-      // This delay ensures the concast variable has been initialized.
-      setTimeout(() => concast.cancel(reason));
-    });
+    const canceller = new Subject<Error>();
+    this.fetchCancelFns.set(queryId, canceller);
 
     // A Concast<T> can be created either from an Iterable<Observable<T>>
     // or from a PromiseLike<Iterable<Observable<T>>>, where T in this
     // case is ApolloQueryResult<TData>.
-    const concast = new Concast(
+    const observable = merge(
+      canceller.pipe(map(error => {
+        throw error
+      })),
+      concast(
       // If the query has @export(as: ...) directives, then we need to
       // process those directives asynchronously. When there are no
       // @export directives (the common case), we deliberately avoid
@@ -1147,14 +1148,12 @@ export class QueryManager<TStore> {
           normalized.context,
         ).then(fromVariables)
         : fromVariables(normalized.variables!)
-    );
-
-    concast.cleanup(() => {
+    ).pipe(cleanup(() => {
       this.fetchCancelFns.delete(queryId);
       applyNextFetchPolicy(options);
-    });
+    })));
 
-    return concast;
+    return observable;
   }
 
   public refetchQueries<TResult>({
@@ -1342,7 +1341,7 @@ export class QueryManager<TStore> {
     const resultsFromCache = (
       diff: Cache.DiffResult<TData>,
       networkStatus = queryInfo.networkStatus || NetworkStatus.loading,
-    ) => {
+    ) : Observable<ApolloQueryResult<TData>> => {
       const data = diff.result;
 
       if (__DEV__ &&
@@ -1359,13 +1358,13 @@ export class QueryManager<TStore> {
       } as ApolloQueryResult<TData>);
 
       if (data && this.transform(query).hasForcedResolvers) {
-        return this.localState.runResolvers({
+        return from(this.localState.runResolvers({
           document: query,
           remoteResult: { data },
           context,
           variables,
           onlyRunForcedResolvers: true,
-        }).then(resolved => fromData(resolved.data || void 0));
+        })).pipe(switchMap(resolved => fromData(resolved.data || void 0)));
       }
 
       return fromData(data);

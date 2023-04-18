@@ -1201,9 +1201,11 @@ describe('ObservableQuery', () => {
 
       expect(observable.options.fetchPolicy).toBe('cache-and-network');
       expect(observable["initialFetchPolicy"]).toBe('cache-and-network');
+      expect(queryManager.optionsUsed.length).toBe(0);
 
       subscribeAndCount(reject, observable, (handleCount, result) => {
         expect(result.error).toBeUndefined();
+        expect(queryManager.optionsUsed[0].fetchPolicy).toBe('cache-and-network');
 
         if (handleCount === 1) {
           expect(result.data).toEqual(data);
@@ -1214,6 +1216,7 @@ describe('ObservableQuery', () => {
           expect(result.loading).toBe(true);
           expect(result.networkStatus).toBe(NetworkStatus.setVariables);
           expect(observable.options.fetchPolicy).toBe('cache-first');
+          expect(queryManager.optionsUsed[1].fetchPolicy).toBe('network-only');
         } else if (handleCount === 3) {
           expect(result.data).toEqual(data2);
           expect(result.loading).toBe(false);
@@ -1223,7 +1226,8 @@ describe('ObservableQuery', () => {
           }).then(result => {
             expect(result.data).toEqual(data);
           }).catch(reject);
-          expect(observable.options.fetchPolicy).toBe('cache-and-network');
+          expect(observable.options.fetchPolicy).toBe('cache-first');
+          expect(queryManager.optionsUsed[2].fetchPolicy).toBe('cache-and-network');
         } else if (handleCount === 4) {
           expect(result.loading).toBe(true);
           expect(result.networkStatus).toBe(NetworkStatus.setVariables);
@@ -1237,7 +1241,8 @@ describe('ObservableQuery', () => {
           }).then(result => {
             expect(result.data).toEqual(data2);
           }).catch(reject);
-          expect(observable.options.fetchPolicy).toBe('cache-and-network');
+          expect(observable.options.fetchPolicy).toBe('cache-first');
+          expect(queryManager.optionsUsed[3].fetchPolicy).toBe('cache-and-network');
         } else if (handleCount === 6) {
           expect(result.data).toEqual(data2);
           expect(result.loading).toBe(true);
@@ -1246,6 +1251,7 @@ describe('ObservableQuery', () => {
           expect(result.data).toEqual(data2);
           expect(result.loading).toBe(false);
           expect(observable.options.fetchPolicy).toBe('cache-first');
+          expect(queryManager.optionsUsed.length).toBe(4);
           setTimeout(resolve, 10);
         } else {
           reject(`too many renders (${handleCount})`);

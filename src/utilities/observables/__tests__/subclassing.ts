@@ -1,5 +1,5 @@
 import { Observable } from "../Observable";
-import { Concast } from "../Concast";
+import { concast } from "../Concast";
 import { map, of } from "rxjs";
 
 function toArrayPromise<T>(observable: Observable<T>): Promise<T[]> {
@@ -19,15 +19,14 @@ function toArrayPromise<T>(observable: Observable<T>): Promise<T[]> {
 
 describe("Observable subclassing", () => {
   it("Symbol.species is defined for Concast subclass", () => {
-    const concast = new Concast([
+    const obs = concast([
       of(1, 2, 3),
       of(4, 5),
     ]);
-    expect(concast).toBeInstanceOf(Concast);
+    expect(obs).toBeInstanceOf(Observable);
 
-    const mapped = concast.pipe(map(n => n * 2));
+    const mapped = obs.pipe(map(n => n * 2));
     expect(mapped).toBeInstanceOf(Observable);
-    expect(mapped).not.toBeInstanceOf(Concast);
 
     return toArrayPromise(mapped).then(doubles => {
       expect(doubles).toEqual([2, 4, 6, 8, 10]);
